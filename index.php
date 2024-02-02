@@ -4,6 +4,6 @@
     <meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"/>
   </head>
   <body> 
-    <h1>Henk 12345</h1>
+    <h1>Henk</h1>
   </body> 
 </html>
