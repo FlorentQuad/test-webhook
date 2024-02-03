@@ -39,7 +39,7 @@
 </head>
 
 <body>
-    <button>Demo</button>
+    <button>QUAD</button>
 </body>
 
 </html>
