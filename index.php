@@ -39,7 +39,7 @@
 </head>
 
 <body>
-    <button onclick='alert("This is a popup message! ")'>Boring Button</button>
+    <button onclick='alert("This is a popup message! ")'>Boring!</button>
 </body>
 
 </html>
