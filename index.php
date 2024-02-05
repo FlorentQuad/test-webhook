@@ -39,7 +39,7 @@
 </head>
 
 <body>
-    <button onclick='alert("Hello Word!")'>QUAD</button>
+    <button onclick='alert("Hello Word!")'>QUAD Solutions</button>
 </body>
 
 </html>
