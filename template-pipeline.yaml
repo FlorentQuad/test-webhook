@@ -1,0 +1,532 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: pipeline-example
+parameters:
+- name: NAMESPACE
+  value: namespace
+- name: WEBHOOK_BRANCH
+  value: main
+- name: WEBHOOK_SECRET
+  value: QUADSolutions
+- name: APP_NAME
+  value: demo-tuesday
+- name: APP_ID
+  value: "830976"
+
+labels:
+  template: ${APP_NAME}
+
+objects:
+- apiVersion: tekton.dev/v1beta1
+  kind: Pipeline
+  metadata:
+    name: ${APP_NAME}
+  spec:
+    params:
+    - name: clone_url
+      type: string
+    - name: git-branch
+      type: string
+    - name: url
+      type: string
+    - name: head_sha
+      type: string
+    workspaces:
+    - name: code-clone
+    - name: pem-github-app
+    - name: get-github-token
+    - name: storage-github-token
+
+    tasks:
+    - name: fetch-repo
+      taskRef:
+        name: git-clone
+      workspaces:
+      - name: output
+        workspace: code-clone
+      params:
+      - name: url
+        value: $(params.clone_url)
+      - name: revision
+        value: $(params.git-branch)
+
+    - name: reset-checks
+      runAfter:
+      - fetch-repo
+      workspaces:
+      - name: pem-github-app
+        workspace: pem-github-app
+      - name: get-github-token
+        workspace: get-github-token
+      - name: storage-github-token
+        workspace: storage-github-token
+      params:
+      - name: url
+        value: $(params.url)
+      - name: head_sha
+        value: $(params.head_sha)
+      taskSpec:
+        params:
+          - name: url
+          - name: head_sha
+        steps:
+        - name: reset-checks
+          image: docker.io/florentquad/check-image
+          workingDir: /workspace/storage-github-token
+          env:
+          - name: PEM_PATH
+            value: "/workspace/pem-github-app/pem-github-app"
+          - name: TOKEN_PATH
+            value: "./GITHUB_API_TOKEN"
+          script: |
+            #!/usr/bin/env bash
+
+            cat /workspace/get-github-token/get-github-token > get-token 
+            chmod u+x get-token 
+            ./get-token ${APP_ID} $PEM_PATH $TOKEN_PATH
+
+            JSON_BODY=$( jq -n \
+              --arg name "Build" \
+              --arg head_sha "$(params.head_sha)" \
+              --arg status "in_progress" \
+              --arg started_at $(date +"%Y-%m-%dT%H:%M:%SZ") \
+              --arg title "Build Check" \
+              --arg summary "The build has started. This might take while." \
+              --arg text "Build is started on Openshift." \
+              '{"name":$name,"head_sha":$head_sha,"status":$status,"started_at":$started_at,"output":{"title":$title,"summary":$summary,"text":$text}}' )
+
+            curl -s -X POST -H "Authorization: Bearer $(cat $TOKEN_PATH)" "$(params.url)/check-runs" -d "$JSON_BODY" | jq -r '.url' > URL_BUILD_CHECK
+
+            JSON_BODY=$( jq -n \
+              --arg name "Test" \
+              --arg head_sha "$(params.head_sha)" \
+              --arg status "in_progress" \
+              --arg started_at $(date +"%Y-%m-%dT%H:%M:%SZ") \
+              --arg title "Test Check" \
+              --arg summary "Testing has been started" \
+              --arg text "Trying to run all tests on Openshift." \
+              '{"name":$name,"head_sha":$head_sha,"status":$status,"started_at":$started_at,"output":{"title":$title,"summary":$summary,"text":$text}}' )
+
+            curl -s -X POST -H "Authorization: Bearer $(cat $TOKEN_PATH)" "$(params.url)/check-runs" -d "$JSON_BODY" | jq -r '.url' > URL_TEST_CHECK
+
+    - name: build
+      runAfter:
+      - reset-checks
+      workspaces:
+      - name: storage-github-token
+        workspace: storage-github-token
+      params:
+      - name: head_sha
+        value: $(params.head_sha)
+      taskSpec:
+        params:
+          - name: head_sha
+        steps:
+        - name: set-check
+          image: docker.io/florentquad/check-image
+          workingDir: /workspace/storage-github-token
+          env:
+          - name: TOKEN_PATH
+            value: "./GITHUB_API_TOKEN"
+          script: |
+            #!/usr/bin/env bash
+
+            echo "--------------------------------"
+            echo "This is the url for the build check run: $(cat URL_BUILD_CHECK)"
+            echo "--------------------------------"
+
+            JSON_BODY=$( jq -n \
+              --arg name "Build" \
+              --arg head_sha "$(params.head_sha)" \
+              --arg status "completed" \
+              --arg conclusion "success" \
+              --arg started_at "$(date +"%Y-%m-%dT%H:%M:%SZ")" \
+              --arg title "Build Completed" \
+              --arg summary "The build has been completed." \
+              --arg text "Build is completed." \
+              '{"name":$name,"head_sha":$head_sha,"status":$status,"conclusion":$conclusion,"started_at":$started_at,"output":{"title":$title,"summary":$summary,"text":$text}}' )
+
+            echo "Let's sleep zzzzzzzzz"
+            sleep 20
+            curl -s -X PATCH -H "Authorization: Bearer $(cat $TOKEN_PATH)" $(cat URL_BUILD_CHECK) -d "$JSON_BODY"
+
+    - name: test
+      runAfter:
+      - build
+      workspaces:
+      - name: storage-github-token
+        workspace: storage-github-token
+      params:
+      - name: head_sha
+        value: $(params.head_sha)
+      taskSpec:
+        params:
+          - name: head_sha
+        steps:
+        - name: set-check
+          image: docker.io/florentquad/check-image
+          workingDir: /workspace/storage-github-token
+          env:
+          - name: TOKEN_PATH
+            value: "./GITHUB_API_TOKEN"
+          script: |
+            #!/usr/bin/env bash
+
+            echo "--------------------------------"
+            echo "This is the url for the build check run: $(cat URL_TEST_CHECK)"
+            echo "--------------------------------"
+
+            JSON_BODY=$( jq -n \
+              --arg name "Test" \
+              --arg head_sha "$(params.head_sha)" \
+              --arg status "completed" \
+              --arg conclusion "success" \
+              --arg started_at "$(date +"%Y-%m-%dT%H:%M:%SZ")" \
+              --arg title "Test Completed" \
+              --arg summary "All test have finished with succes." \
+              --arg text "All test are completed." \
+              '{"name":$name,"head_sha":$head_sha,"status":$status,"conclusion":$conclusion,"started_at":$started_at,"output":{"title":$title,"summary":$summary,"text":$text}}' )
+
+            echo "Let's sleep zzzzzzzzz"
+            sleep 20
+            curl -s -X PATCH -H "Authorization: Bearer $(cat $TOKEN_PATH)" $(cat URL_TEST_CHECK) -d "$JSON_BODY"
+
+    finally: 
+    - name: final
+      taskSpec:
+        steps:
+        - image: image-registry.openshift-image-registry.svc:5000/openshift/cli
+          script: |
+            #!/usr/bin/env bash
+            
+            echo "Everything Finished"
+
+- apiVersion: v1
+  kind: ServiceAccount
+  metadata:
+    name: build-bot 
+
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: RoleBinding
+  metadata:
+    name: rolebinding-build-bot
+  roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: ClusterRole
+    name: edit
+  subjects:
+  - kind: ServiceAccount
+    name: build-bot
+    namespace: ${NAMESPACE}
+
+- apiVersion: triggers.tekton.dev/v1beta1
+  kind: TriggerBinding
+  metadata:
+    name: ${APP_NAME}-trigger-binding
+  spec:
+    params:
+    - name: clone_url
+      value: $(body.repository.clone_url)
+    - name: url
+      value: $(body.repository.url)
+    - name: head_sha
+      value: $(body.check_suite.head_sha)
+
+- apiVersion: triggers.tekton.dev/v1beta1
+  kind: TriggerTemplate
+  metadata:
+    name: ${APP_NAME}-trigger-template
+  spec:
+    params:
+    - name: clone_url
+    - name: url
+    - name: head_sha
+    resourcetemplates:
+    - apiVersion: tekton.dev/v1beta1
+      kind: PipelineRun
+      metadata:
+        generateName: pipeline-run-
+      spec:
+        serviceAccountName: build-bot
+        pipelineRef:
+          name: ${APP_NAME}
+        podTemplate:
+          securityContext:
+            fsGroup: 65532
+            runAsUser: 1001
+        workspaces:
+        - name: code-clone
+          volumeClaimTemplate:
+            spec:
+              accessModes:
+              - ReadWriteOnce
+              resources:
+                requests:
+                  storage: 1Gi
+        - name: storage-github-token
+          volumeClaimTemplate:
+            spec:
+              accessModes:
+              - ReadWriteOnce
+              resources:
+                requests:
+                  storage: 1Mi
+        - name: pem-github-app
+          secret:
+            secretName: pem-github-app
+        - name: get-github-token
+          configmap:
+            name: get-github-token
+        params:
+        - name: clone_url
+          value: $(tt.params.clone_url)
+        - name: url
+          value: $(tt.params.url)
+        - name: head_sha
+          value: $(tt.params.head_sha)
+        - name: git-branch
+          value: main
+      
+- apiVersion: triggers.tekton.dev/v1beta1
+  kind: Trigger
+  metadata:
+    name: ${APP_NAME}-trigger
+  spec:
+    serviceAccountName: pipeline
+    interceptors:
+      - ref:
+          name: "github"
+        params:
+          - name: "secretRef"
+            value:
+              secretName: github-secret-webhook
+              secretKey: secretToken
+      - ref:
+          name: "cel"
+        params:
+          - name: "filter"
+            value: body.repository.name == 'test-webhook' && (body.action == 'requested' || body.action == 'rerequested')
+    bindings:
+      - ref: ${APP_NAME}-trigger-binding
+    template:
+      ref: ${APP_NAME}-trigger-template
+
+- apiVersion: triggers.tekton.dev/v1beta1
+  kind: EventListener
+  metadata:
+    name: ${APP_NAME}-eventlistener
+  spec:
+    serviceAccountName: pipeline
+    triggers:
+      - triggerRef: ${APP_NAME}-trigger
+      
+- apiVersion: v1
+  kind: Secret
+  metadata:
+    name: github-secret-webhook
+  type: Opaque
+  stringData:
+    secretToken: ${WEBHOOK_SECRET}
+
+- apiVersion: route.openshift.io/v1
+  kind: Route
+  metadata:
+    labels:
+      template: pipeline-${APP_NAME}
+    name: el-${APP_NAME}-eventlistener-route
+  spec:
+    port:
+      targetPort: http-listener
+    tls:
+      insecureEdgeTerminationPolicy: None
+      termination: edge
+    to:
+      kind: Service
+      name: el-${APP_NAME}-eventlistener
+      weight: 100
+    wildcardPolicy: None
+
+- apiVersion: image.openshift.io/v1
+  kind: ImageStream
+  metadata:
+    name: ${APP_NAME}
+  spec:
+    lookupPolicy:
+      local: false
+
+- apiVersion: build.openshift.io/v1
+  kind: BuildConfig
+  metadata:
+    name: ${APP_NAME}
+  spec:
+    nodeSelector: null
+    output:
+      to:
+        kind: ImageStreamTag
+        name: ${APP_NAME}:latest
+    postCommit: {}
+    resources: {}
+    source:
+      git:
+        uri: https://github.com/FlorentQuad/test-webhook
+      type: Git
+    strategy:
+      sourceStrategy:
+        from:
+          kind: ImageStreamTag
+          name: php:8.0-docker.io/florentquad/check-image8
+          namespace: openshift
+      type: Source
+    triggers:
+    - github:
+        secret: ic5e8M1Qrniip7BwfduZ
+      type: GitHub
+    - generic:
+        secret: juItEuIQgR0xJVYr-Zmq
+      type: Generic
+    - type: ConfigChange
+    - imageChange: {}
+      type: ImageChange
+
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    annotations:
+        image.openshift.io/triggers: '[{"from":{"kind":"ImageStreamTag","name":"${APP_NAME}:latest"},"fieldPath":"spec.template.spec.containers[?(@.name==\"${APP_NAME}\")].image"}]'
+    name: ${APP_NAME}
+  spec:
+    replicas: 1
+    selector:
+      matchLabels:
+        deployment: ${APP_NAME}
+    template:
+      metadata:
+        labels:
+          deployment: ${APP_NAME}
+      spec:
+        containers:
+        - image: ${APP_NAME}:latest
+          name: ${APP_NAME}
+          ports:
+          - containerPort: 8080
+            protocol: TCP
+          - containerPort: 8443
+            protocol: TCP
+
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: ${APP_NAME}
+  spec:
+    ports:
+    - name: 8080-tcp
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+    - name: 8443-tcp
+      port: 8443
+      protocol: TCP
+      targetPort: 8443
+    selector:
+      deployment: ${APP_NAME}
+
+- apiVersion: route.openshift.io/v1
+  kind: Route
+  metadata:
+    name: ${APP_NAME}
+  spec:
+    port:
+      targetPort: 8080-tcp
+    tls:
+      insecureEdgeTerminationPolicy: None
+      termination: edge
+    to:
+      kind: Service
+      name: ${APP_NAME}
+      weight: 100
+  wildcardPolicy: None
+
+- apiVersion: "v1"
+  kind: "Service"
+  metadata:
+    name: "external-service"
+  spec:
+    type: ExternalName
+    externalName: api.github.com
+  selector: {} 
+
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: get-github-token
+  data:
+    get-github-token: |
+      #!/usr/bin/env bash
+
+      # Parameters
+      APP_ID=$1
+      PEM_PATH=$2
+      TOKEN_PATH=$3
+
+      usage(){
+          echo "Incorrect Parameters, please use:"
+          echo "<APP_ID>: Github App ID"
+          echo "<PEM_PATH>: path to pem file, pem file of Github App"
+          echo "<TOKEN_PATH>: path where to store token"
+          exit 1
+      }
+
+      [ -z "$APP_ID" ] && usage
+      [ -z "$PEM_PATH" ] && usage
+
+      b64enc() { 
+          openssl base64 | tr -d '=' | tr '/+' '_-' | tr -d '\n' 
+      }
+
+      # ------------ Generate JWT Token + Installation Token
+      # https://docs.github.com/en/enterprise-server@3.9/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
+
+      set -o pipefail
+
+      pem=$( cat $PEM_PATH )
+
+      now=$(date +%s)
+      iat=$((${now} - 60)) # Issues 60 seconds in the past
+      exp=$((${now} + 600)) # Expires 10 minutes in the future
+
+      header_json='{
+          "typ":"JWT",
+          "alg":"RS256"
+      }'
+      # Header encode
+      header=$( echo -n "${header_json}" | b64enc )
+
+      payload_json='{
+          "iat":'"${iat}"',
+          "exp":'"${exp}"',
+          "iss":'"${APP_ID}"'
+      }'
+      # Payload encode
+      payload=$( echo -n "${payload_json}" | b64enc )
+
+      # Signature
+      header_payload="${header}"."${payload}"
+      signature=$( 
+          openssl dgst -sha256 -sign <(echo -n "${pem}") \
+          <(echo -n "${header_payload}") | b64enc 
+      )
+
+      # Create JWT
+      JWT="${header_payload}"."${signature}"
+
+      # Installation URL
+      ACCES_TOKENS_URL=$(curl -s -X GET -H "Authorization: Bearer $JWT" https://api.github.com/app/installations | jq -r '.[] | .access_tokens_url')
+
+      # Get Installation Token
+      curl -s -X POST -H "Authorization: Bearer $JWT" $ACCES_TOKENS_URL | jq -r ' .token ' > $TOKEN_PATH
+
+      echo "--------------------------------"
+      echo "This is the access token url: $ACCES_TOKENS_URL"
+      echo "This the github token: $(cat $TOKEN_PATH)"
+      echo "--------------------------------"
