@@ -1,3 +1,4 @@
+# Example application with Pipeline + Github Apps + Github Checks API:
 ```
 oc create -f template-pipeline.yml && oc process pipeline-example -p NAMESPACE=$(oc project -q) -o yaml > pipeline.yml && oc apply -f pipeline.yml
 ```
