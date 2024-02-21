@@ -193,18 +193,15 @@ objects:
             curl -s -X PATCH -H "Authorization: Bearer $(cat $TOKEN_PATH)" $(cat URL_TEST_CHECK) -d "$JSON_BODY"
 
     finally: 
-    - name: clean-up-after-error
-      when:
-      - input: $(tasks.status)
-        operator: in
-        values: ["Failed","None"]
+    - name: clean-up-pipelineruns
       taskSpec:
         steps:
         - image: image-registry.openshift-image-registry.svc:5000/openshift/cli
           script: |
             #!/usr/bin/env bash
             
-            oc delete pipelineruns.tekton.dev --all
+            [[ $(oc get pipelineruns.tekton.dev -o=go-template="{{(len .items)}}") -gt 1 ]] && oc delete pipelineruns.tekton.dev/$(oc get pipelineruns.tekton.dev --sort-by='.metadata.creationTimestamp' -o=go-template="{{(index .items 0).metadata.name}}")
+            echo "Everything finished."
 
     - name: set-build-check-on-failed
       workspaces:
