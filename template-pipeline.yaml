@@ -306,7 +306,7 @@ objects:
           name: "cel"
         params:
           - name: "filter"
-            value: body.repository.name == 'test-webhook' && (body.action == 'requested' || body.action == 'rerequested')
+            value: body.repository.name == 'test-webhook' &&  body.check_suite.head_branch != 'main'  && (body.action == 'requested' || body.action == 'rerequested')
     bindings:
       - ref: ${APP_NAME}-trigger-binding
     template:
