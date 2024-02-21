@@ -193,14 +193,99 @@ objects:
             curl -s -X PATCH -H "Authorization: Bearer $(cat $TOKEN_PATH)" $(cat URL_TEST_CHECK) -d "$JSON_BODY"
 
     finally: 
-    - name: final
+    - name: clean-up-after-error
+      when:
+      - input: $(tasks.status)
+        operator: in
+        values: ["Failed","None"]
       taskSpec:
         steps:
         - image: image-registry.openshift-image-registry.svc:5000/openshift/cli
           script: |
             #!/usr/bin/env bash
             
-            echo "Everything Finished"
+            oc delete pipelineruns.tekton.dev --all
+
+    - name: set-build-check-on-failed
+      workspaces:
+      - name: storage-github-token
+        workspace: storage-github-token
+      when:
+      - input: $(tasks.status)
+        operator: in
+        values: ["Failed","None"]
+      params:
+      - name: head_sha
+        value: $(params.head_sha)
+      taskSpec:
+        params:
+        - name: head_sha
+        steps:
+        - image: docker.io/florentquad/check-image
+          workingDir: /workspace/storage-github-token
+          env:
+          - name: TOKEN_PATH
+            value: "./GITHUB_API_TOKEN"
+          script: |
+            #!/usr/bin/env bash
+
+
+            echo "--------------------------------"
+            echo "Set Build Check to failed"
+            echo "--------------------------------"
+
+            JSON_BODY=$( jq -n \
+              --arg name "Build" \
+              --arg head_sha "$(params.head_sha)" \
+              --arg status "completed" \
+              --arg conclusion "failure" \
+              --arg started_at "$(date +"%Y-%m-%dT%H:%M:%SZ")" \
+              --arg title "Build Failed" \
+              --arg summary "Sorry, the build has failed." \
+              --arg text "The build was failed. Please check your code." \
+              '{"name":$name,"head_sha":$head_sha,"status":$status,"conclusion":$conclusion,"started_at":$started_at,"output":{"title":$title,"summary":$summary,"text":$text}}' )
+
+            curl -s -X PATCH -H "Authorization: Bearer $(cat $TOKEN_PATH)" $(cat URL_BUILD_CHECK) -d "$JSON_BODY"
+
+    - name: set-test-check-on-failed
+      workspaces:
+      - name: storage-github-token
+        workspace: storage-github-token
+      when:
+      - input: $(tasks.status)
+        operator: in
+        values: ["Failed","None"]
+      params:
+      - name: head_sha
+        value: $(params.head_sha)
+      taskSpec:
+        params:
+        - name: head_sha
+        steps:
+        - image: docker.io/florentquad/check-image
+          workingDir: /workspace/storage-github-token
+          env:
+          - name: TOKEN_PATH
+            value: "./GITHUB_API_TOKEN"
+          script: |
+            #!/usr/bin/env bash
+
+            echo "--------------------------------"
+            echo "Set Test Check to failed"
+            echo "--------------------------------"
+
+            JSON_BODY=$( jq -n \
+              --arg name "Test" \
+              --arg head_sha "$(params.head_sha)" \
+              --arg status "completed" \
+              --arg conclusion "failure" \
+              --arg started_at "$(date +"%Y-%m-%dT%H:%M:%SZ")" \
+              --arg title "Test Failed" \
+              --arg summary "Sorry, the tests have failed." \
+              --arg text "The test failed. Please check your code." \
+              '{"name":$name,"head_sha":$head_sha,"status":$status,"conclusion":$conclusion,"started_at":$started_at,"output":{"title":$title,"summary":$summary,"text":$text}}' )
+
+            curl -s -X PATCH -H "Authorization: Bearer $(cat $TOKEN_PATH)" $(cat URL_TEST_CHECK) -d "$JSON_BODY"
 
 - apiVersion: v1
   kind: ServiceAccount
@@ -208,13 +293,47 @@ objects:
     name: build-bot 
 
 - apiVersion: rbac.authorization.k8s.io/v1
+  kind: Role
+  metadata:
+    name: role-build-bot
+  rules:
+  - apiGroups:
+    - build.openshift.io
+    resources:
+    - buildconfigs/instantiate
+    - buildconfigs/instantiatebinary
+    verbs:
+    - create
+  - apiGroups:
+    - build.openshift.io
+    resources:
+    - buildconfigs
+    verbs:
+    - get
+  - apiGroups:
+    - route.openshift.io
+    resources:
+    - routes
+    verbs:
+    - get  
+  - apiGroups: 
+    - tekton.dev
+    resources: 
+    - pipelineruns
+    verbs:
+    - "delete"
+    - "get"
+    - "watch"
+    - "list"
+
+- apiVersion: rbac.authorization.k8s.io/v1
   kind: RoleBinding
   metadata:
     name: rolebinding-build-bot
   roleRef:
-    apiGroup: rbac.authorization.k8s.io
-    kind: ClusterRole
-    name: edit
+      apiGroup: rbac.authorization.k8s.io
+      kind: Role
+      name: role-build-bot
   subjects:
   - kind: ServiceAccount
     name: build-bot
@@ -263,7 +382,7 @@ objects:
               - ReadWriteOnce
               resources:
                 requests:
-                  storage: 1Gi
+                  storage: 100Mi
         - name: storage-github-token
           volumeClaimTemplate:
             spec:
